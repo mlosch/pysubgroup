@@ -120,24 +120,40 @@ class BinaryTarget(BaseTarget):
         return statistics
 
 
+# to enable pickling of namedtuple, name of variable and name of tuple have to match
+PositivesQF_parameters = namedtuple("PositivesQF_parameters", ("size_sg", "positives_count"))
+
 class SimplePositivesQF(
     AbstractInterestingnessMeasure
 ):  # pylint: disable=abstract-method
-    tpl = namedtuple("PositivesQF_parameters", ("size_sg", "positives_count"))
 
     def __init__(self):
-        self.dataset_statistics = None
+        # self.dataset_statistics = None
         self.positives = None
         self.has_constant_statistics = False
         self.required_stat_attrs = ("size_sg", "positives_count")
 
+        self.const_stats = dict(size_sg=None, positives_count=None)
+
     def calculate_constant_statistics(self, data, target):
         assert isinstance(target, BinaryTarget)
         self.positives = target.covers(data)
-        self.dataset_statistics = SimplePositivesQF.tpl(
-            len(data), np.sum(self.positives)
-        )
+        # self.dataset_statistics = SimplePositivesQF.tpl(
+        #     len(data), np.sum(self.positives)
+        # )
+        self.const_stats['size_sg'] = len(data)
+        self.const_stats['positives_count'] = np.sum(self.positives)
         self.has_constant_statistics = True
+
+    @property
+    def dataset_statistics(self):
+        if not self.has_constant_statistics:
+            return None
+
+        return PositivesQF_parameters(
+            self.const_stats['size_sg'], self.const_stats['positives_count']
+        )
+
 
     def calculate_statistics(
         self, subgroup, target, data, statistics=None
@@ -145,9 +161,13 @@ class SimplePositivesQF(
         cover_arr, size_sg = get_cover_array_and_size(
             subgroup, len(self.positives), data
         )
-        return SimplePositivesQF.tpl(
+        # return SimplePositivesQF.tpl(
+        #     size_sg, np.count_nonzero(self.positives[cover_arr])
+        # )
+        return PositivesQF_parameters(
             size_sg, np.count_nonzero(self.positives[cover_arr])
         )
+        
 
     # <<< GpGrowth >>>
     def gp_get_stats(self, row_index):
@@ -160,7 +180,8 @@ class SimplePositivesQF(
         left += right
 
     def gp_get_params(self, _cover_arr, v):
-        return SimplePositivesQF.tpl(v[0], v[1])
+        # return SimplePositivesQF.tpl(v[0], v[1])
+        return PositivesQF_parameters(v[0], v[1])
 
     def gp_to_str(self, stats):
         return " ".join(map(str, stats))

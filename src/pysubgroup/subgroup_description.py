@@ -14,47 +14,65 @@ import numpy as np
 import pysubgroup as ps
 
 
+# @total_ordering
+# class SelectorBase(ABC):
+#     # selector cache
+#     __refs__ = weakref.WeakSet()
+
+#     def __new__(cls, *args, **kwargs):
+#         """Ensures that each selector only exists once."""
+
+#         # create temporary selector
+#         tmp = super().__new__(cls)
+#         tmp.set_descriptions(*args, **kwargs)
+
+#         # save original arguments
+#         # NOTE: this is a fix for pickle
+#         #       so we can call `__getnewargs_ex__` with the right arguments
+#         # TODO: this may have unintended side effects if args,
+#         #       kwargs are large or volatile (I don't think we have that yet though)
+#         tmp.__new_args__ = args, kwargs
+
+#         # check if selector is already in cache (__refs__)
+#         # if so, return cached instance
+#         if tmp not in SelectorBase.__refs__:
+#             return tmp  # new selector
+#         # (not sure why we never have the below case)
+#         for ref in SelectorBase.__refs__:  # pragma no branch okay
+#             if ref == tmp:
+#                 return ref
+#         # if not return
+#         return tmp  # pragma: no cover
+
+#     def __getnewargs_ex__(self):  # pylint: disable=invalid-getnewargs-ex-returned
+#         tmp_args = self.__new_args__
+#         del self.__new_args__
+#         return tmp_args
+
+#     def __init__(self):
+#         # add selector to cache
+#         # TODO: why not do this in `__new__`,
+#         # then it would be all together in one function?
+#         SelectorBase.__refs__.add(self)
+
+#     def __eq__(self, other):
+#         if other is None:  # pragma: no cover
+#             return False
+#         return repr(self) == repr(other)
+
+#     def __lt__(self, other):
+#         return repr(self) < repr(other)
+
+#     def __hash__(self):
+#         return self._hash  # pylint: disable=no-member
+
+#     @abstractmethod
+#     def set_descriptions(self, *args, **kwargs):
+#         pass  # pragma: no cover
+
+
 @total_ordering
 class SelectorBase(ABC):
-    # selector cache
-    __refs__ = weakref.WeakSet()
-
-    def __new__(cls, *args, **kwargs):
-        """Ensures that each selector only exists once."""
-
-        # create temporary selector
-        tmp = super().__new__(cls)
-        tmp.set_descriptions(*args, **kwargs)
-
-        # save original arguments
-        # NOTE: this is a fix for pickle
-        #       so we can call `__getnewargs_ex__` with the right arguments
-        # TODO: this may have unintended side effects if args,
-        #       kwargs are large or volatile (I don't think we have that yet though)
-        tmp.__new_args__ = args, kwargs
-
-        # check if selector is already in cache (__refs__)
-        # if so, return cached instance
-        if tmp not in SelectorBase.__refs__:
-            return tmp  # new selector
-        # (not sure why we never have the below case)
-        for ref in SelectorBase.__refs__:  # pragma no branch okay
-            if ref == tmp:
-                return ref
-        # if not return
-        return tmp  # pragma: no cover
-
-    def __getnewargs_ex__(self):  # pylint: disable=invalid-getnewargs-ex-returned
-        tmp_args = self.__new_args__
-        del self.__new_args__
-        return tmp_args
-
-    def __init__(self):
-        # add selector to cache
-        # TODO: why not do this in `__new__`,
-        # then it would be all together in one function?
-        SelectorBase.__refs__.add(self)
-
     def __eq__(self, other):
         if other is None:  # pragma: no cover
             return False
@@ -538,6 +556,8 @@ class Conjunction(BooleanExpressionBase):
     def __init__(self, selectors):
         self._repr = None
         self._hash = None
+        self._cover_hash = None
+        self._cover = None
         try:
             it = iter(selectors)
             self._selectors = list(it)
@@ -547,9 +567,16 @@ class Conjunction(BooleanExpressionBase):
     def covers(self, instance):
         # empty description ==> return a list of all '1's
         if not self._selectors:
-            return np.full(len(instance), True, dtype=bool)
+            result = np.full(len(instance), True, dtype=bool)
+            self._cover = result
+            return result
         # non-empty description
-        return np.all([sel.covers(instance) for sel in self._selectors], axis=0)
+        result = np.all([sel.covers(instance) for sel in self._selectors], axis=0)
+
+        # calculate hash for result (over indices)
+        self._cover = result
+        self._cover_hash = result.tostring().__hash__()
+        return result
 
     def __len__(self):
         return len(self._selectors)
@@ -592,6 +619,8 @@ class Conjunction(BooleanExpressionBase):
     def _invalidate_representations(self):
         self._repr = None
         self._hash = None
+        self._cover_hash = None
+        self._cover = None
 
     def append_and(self, to_append):
         if isinstance(to_append, SelectorBase):

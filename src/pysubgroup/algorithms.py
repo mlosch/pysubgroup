@@ -10,9 +10,12 @@ from heapq import heappop, heappush
 from itertools import chain, combinations
 from math import factorial
 
+import time
 import numpy as np
 
 import pysubgroup as ps
+
+from multiprocessing import Pool
 
 
 class SubgroupDiscoveryTask:
@@ -368,11 +371,164 @@ class BeamSearch:
     Implements the BeamSearch algorithm. Its a basic implementation
     """
 
-    def __init__(self, beam_width=20, beam_width_adaptive=False):
+    class PoolArgs(object):
+        def __init__(self, last_sg, selector_idx):
+            super().__init__()
+            self.last_sg = last_sg
+            self.selector_idx = selector_idx
+
+    class PoolResult(object):
+        def __init__(self, sg, quality, statistics):
+            super().__init__()
+            self.sg_inds = sg
+            self.quality = quality
+            self.statistics = statistics
+
+    def init_worker(task):
+        BeamSearch.task = task
+        # BeamSearch.task.search_space = BeamSearch.task.search_space.copy()
+        BeamSearch.task.data = BeamSearch.task.data.copy() # copying the data, releases some bottleneck for multiprocessing
+
+    task = None
+
+    def __init__(self, beam_width=20, beam_width_adaptive=False, nproc=0):
         self.beam_width = beam_width
         self.beam_width_adaptive = beam_width_adaptive
+        self.nproc = nproc
+
+    def _process_subgroup(self, args):
+        # print('worker, id(task)={}'.format(id(BeamSearch.task)))
+        last_sg = args.last_sg
+        task = BeamSearch.task
+
+        if args.selector_idx in last_sg:
+            return None
+        # if sel in last_sg.selectors:
+        #     return None
+
+        sg_inds = last_sg + [args.selector_idx,]
+        sg = ps.sg_from_inds(task.search_space, sg_inds)
+        # sg = ps.Conjunction(last_sg.selectors + (sel,))
+        statistics = task.qf.calculate_statistics(
+            sg, task.target, task.data
+        )
+        quality = task.qf.evaluate(sg, task.target, task.data, statistics)
+
+        return BeamSearch.PoolResult(sg_inds, quality, statistics)
 
     def execute(self, task):
+        # adapt beam width to the result set size if desired
+        beam_width = self.beam_width
+        if self.beam_width_adaptive:
+            beam_width = task.result_set_size
+
+        # check if beam size is to small for result set
+        if beam_width < task.result_set_size:
+            raise RuntimeError(
+                "Beam width in the beam search algorithm "
+                "is smaller than the result set size!"
+            )
+
+        task.qf.calculate_constant_statistics(task.data, task.target)
+
+        visited = set()
+
+        # init
+        beam = [
+            (
+                0,
+                [], # selectors
+                task.qf.calculate_statistics(slice(None), task.target, task.data),
+            )
+        ]
+        previous_beam = None
+
+        pool = None
+        if self.nproc > 1:
+            pool = Pool(self.nproc, initializer=BeamSearch.init_worker, initargs=(task,))
+
+        dt_map = 0
+        dt_add_if = 0
+
+        depth = 0
+        while beam != previous_beam and depth < task.depth:
+            previous_beam = beam.copy()
+
+            for _, last_sg_inds, _ in previous_beam:
+                # sg_hash = str(sorted(last_sg_inds))
+                # if sg_hash in visited:
+                #     continue
+                # visited.add(sg_hash)
+
+                # if getattr(last_sg, "visited", False):
+                #     continue
+                # setattr(last_sg, "visited", True)
+
+                if pool is not None:
+                    # results = pool.map
+                    dt_map_t0 = time.time()
+                    dt_add_if_ = 0
+                    for result in pool.imap_unordered(self._process_subgroup, [BeamSearch.PoolArgs(last_sg_inds, i) for i in range(len(task.search_space))], chunksize=20): #len(task.search_space)//self.nproc):
+                        if result is None:
+                            continue
+
+                        dt = time.time()
+                        ps.add_if_required(
+                            beam,
+                            visited,
+                            result.sg_inds,
+                            result.quality,
+                            task,
+                            check_for_duplicates=True,
+                            statistics=result.statistics,
+                            explicit_result_set_size=beam_width,
+                        )
+                        dt_add_if_ += time.time() - dt
+
+                    dt_map = (time.time() - dt_map_t0) - dt_add_if_
+                    # dt_add_if = dt_add_if_
+
+                    # print('dt for map: ', dt_map)
+                    # print('dt for add_if: ', dt_add_if_)
+                else:
+                    for sel in task.search_space:
+                        # create a clone
+                        if sel in last_sg.selectors:
+                            continue
+                        sg = ps.Conjunction(last_sg.selectors + (sel,))
+                        statistics = task.qf.calculate_statistics(
+                            sg, task.target, task.data
+                        )
+                        quality = task.qf.evaluate(sg, task.target, task.data, statistics)
+                        ps.add_if_required(
+                            beam,
+                            sg,
+                            quality,
+                            task,
+                            check_for_duplicates=True,
+                            statistics=statistics,
+                            explicit_result_set_size=beam_width,
+                        )
+            depth += 1
+            print('BeamSearch depth: [{}/{}]'.format(depth, task.depth))
+
+        if pool is not None:
+            pool.close()
+
+            # convert results
+            for i in range(len(beam)):
+                beam[i] = (beam[i][0], ps.sg_from_inds(task.search_space, beam[i][1]), beam[i][2])
+
+        # result = beam[-task.result_set_size:]
+        while len(beam) > task.result_set_size:
+            heappop(beam)
+
+        result = beam
+        result = ps.prepare_subgroup_discovery_result(result, task)
+        return ps.SubgroupDiscoveryResult(result, task)
+
+
+    def _execute(self, task):
         # adapt beam width to the result set size if desired
         beam_width = self.beam_width
         if self.beam_width_adaptive:

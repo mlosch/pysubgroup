@@ -294,9 +294,47 @@ class SubgroupDiscoveryResult:
         return latex
 
 
+def is_duplicate(list_of_sgs, sg):
+    same_expression = sg in set(list_of_sgs)
+    if same_expression: 
+        return True
+
+    same_set = sg._cover_hash in set([sg_._cover_hash for sg_ in list_of_sgs])
+    if same_set:
+        # print('Non-equal expression, but equal set:\n\t {}'.format(sg))
+        return True
+
+    return False
+
+
+def has_significant_overlap(data, list_of_sgs, sg, threshold):
+    if sg._cover is None:
+        ref_set = sg.covers(data)
+    else:
+        ref_set = sg._cover
+    
+    for sg_ in list_of_sgs:
+        if sg_._cover is None:
+            set_ = sg_.covers(data)
+        else:
+            set_ = sg_._cover
+        intersection = ref_set&set_
+        union = ref_set|set_
+
+        IoU = float(intersection.sum()) / float(union.sum())
+
+        if IoU > threshold:
+            # print('significant overlap. IoU={:.2f}'.format(IoU))
+            return True
+    return False
+
+def sg_from_inds(search_space, inds):
+    return ps.Conjunction([search_space[i] for i in inds])
+
 def add_if_required(
     result,
-    sg,
+    visited,
+    sg_inds,
     quality,
     task: SubgroupDiscoveryTask,
     check_for_duplicates=False,
@@ -311,13 +349,23 @@ def add_if_required(
     if explicit_result_set_size is None:
         explicit_result_set_size = task.result_set_size
 
+    sg_hash = str(sorted(sg_inds))
+    sg = sg_from_inds(task.search_space, sg_inds)
+
     if quality >= task.min_quality:
+        if check_for_duplicates and sg_hash in visited:
+            return
+        visited.add(sg_hash)
         if not ps.constraints_satisfied(task.constraints, sg, statistics, task.data):
             return
-        if check_for_duplicates and (quality, sg, statistics) in result:
-            return
+        # if check_for_duplicates and (quality, sg, statistics) in result:
+        #     return
+        # if check_for_duplicates and ps.is_duplicate([r[1] for r in result], sg):
+        #     return
+        # if check_for_duplicates and ps.has_significant_overlap(task.data, [r[1] for r in result], sg, 0.3):
+        #     return
         if len(result) < explicit_result_set_size:
-            heappush(result, (quality, sg, statistics))
+            heappush(result, (quality, sg_inds, statistics))
         elif quality > result[0][0]:  # better than worst subgroup
             heappop(result)
-            heappush(result, (quality, sg, statistics))
+            heappush(result, (quality, sg_inds, statistics))
